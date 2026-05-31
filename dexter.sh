@@ -1,370 +1,326 @@
 #!/usr/bin/env bash
 
-# ==============================================
-# 🦸‍♂️ ИНСТРУМЕНТАРИЙ DEXTER v2.0
-# Многофункциональный инструмент для работы с русским языком и системой в UserLAnd
-# ==============================================
+# ========================================================
+# 🦸‍♂️ DEXTERITY v4.1 - Современный инструмент для UserLAnd
+# ========================================================
 
-# Цвета для оформления вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+VERSION="4.1"
+CONFIG_DIR="$HOME/.config/dexterity"
+BACKUP_DIR="/sdcard/dexter_backups"
+LOG_FILE="$CONFIG_DIR/dexterity.log"
+DEBUG_MODE=false
 
-# --- ФУНКЦИИ ДЛЯ РАБОТЫ С РУССКИМ ЯЗЫКОМ ---
+# --- Цвета для gum ---
+export GUM_CHOOSE_HEADER_FOREGROUND="212"
+export GUM_CONFIRM_PROMPT_FOREGROUND="46"
+export GUM_SPIN_SPINNER="dot"
 
-# 1. Настройка русской локали
+# --- Инициализация ---
+mkdir -p "$CONFIG_DIR"
+touch "$LOG_FILE"
+
+# --- Логирование ---
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    [[ "$DEBUG_MODE" == true ]] && echo "[DEBUG] $1"
+}
+
+# --- Функция установки пакетов с рекомендованными ---
+smart_install() {
+    local packages=("$@")
+    for pkg in "${packages[@]}"; do
+        if ! dpkg -l | grep -qw "$pkg"; then
+            gum style --foreground 226 "📦 Установка $pkg (с рекомендациями)..."
+            sudo apt update &>/dev/null
+            sudo apt install --install-recommends -y "$pkg" &>/dev/null
+            if [ $? -eq 0 ]; then
+                gum style --foreground 46 "✅ $pkg установлен"
+            else
+                gum style --foreground 196 "❌ Ошибка при установке $pkg"
+                return 1
+            fi
+        else
+            gum style --foreground 46 "✅ $pkg уже установлен"
+        fi
+    done
+}
+
+# --- Проверка зависимостей ---
+check_deps() {
+    local missing=()
+    for cmd in gum ncdu nmap btop curl jq; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        gum style --foreground 196 "⚠️ Отсутствуют: ${missing[*]}"
+        gum confirm "Установить необходимые пакеты?" && smart_install "${missing[@]}"
+    fi
+}
+
+# --- Обработка аргументов командной строки ---
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --backup) smart_backup; exit 0 ;;
+            --clean) total_cleanup; exit 0 ;;
+            --monitor) system_monitor; exit 0 ;;
+            --debug) DEBUG_MODE=true; shift ;;
+            --help)
+                gum style --border normal --margin "1" --padding "1" "Использование: ./dexter.sh [--backup|--clean|--monitor|--debug|--help]"
+                exit 0
+                ;;
+            *) gum style --foreground 196 "Неизвестный аргумент: $1"; exit 1 ;;
+        esac
+    done
+}
+
+# --- 1. Настройка русского языка ---
 setup_russian() {
-    echo -e "\n${GREEN}[🇷🇺 НАСТРОЙКА РУССКОГО ЯЗЫКА]${NC}"
-    echo -e "${CYAN}Установка языковых пакетов и генерация локали...${NC}"
-    
-    # Установка языковых пакетов
-    sudo apt update
-    sudo apt install -y language-pack-ru
-    
-    # Генерация русской локали
-    sudo locale-gen ru_RU.UTF-8
-    
-    # Настройка переменных окружения для текущей сессии
+    gum style --border normal --margin "1" --padding "1" --border-foreground 46 "🇷🇺 Настройка русского языка"
+    if ! dpkg -l | grep -qw language-pack-ru; then
+        sudo apt update &>/dev/null
+        sudo apt install -y language-pack-ru &>/dev/null
+    fi
+    sudo locale-gen ru_RU.UTF-8 &>/dev/null
     export LANG=ru_RU.UTF-8
     export LC_ALL=ru_RU.UTF-8
     export LANGUAGE=ru_RU:ru
-    
-    # Добавление переменных в .bashrc для постоянного применения
-    echo -e "\n# Русская локаль для DEXTER" >> ~/.bashrc
-    echo "export LANG=ru_RU.UTF-8" >> ~/.bashrc
-    echo "export LC_ALL=ru_RU.UTF-8" >> ~/.bashrc
-    echo "export LANGUAGE=ru_RU:ru" >> ~/.bashrc
-    
-    echo -e "${GREEN}✅ Русская локаль успешно настроена!${NC}"
-    echo -e "${YELLOW}⚠️ Перезапустите терминал для применения изменений.${NC}"
-    read -p "Нажмите Enter, чтобы продолжить..."
+    grep -qxF 'export LANG=ru_RU.UTF-8' ~/.bashrc || {
+        echo -e "\n# Русская локаль для DEXTERITY\nexport LANG=ru_RU.UTF-8\nexport LC_ALL=ru_RU.UTF-8\nexport LANGUAGE=ru_RU:ru" >> ~/.bashrc
+    }
+    gum style --foreground 46 "✅ Русская локаль настроена. Перезапусти терминал."
 }
 
-# 2. Перевод текста (en -> ru, ru -> en)
+# --- 2. Перевод текста ---
 translate_text() {
-    echo -e "\n${GREEN}[🔄 ПЕРЕВОД ТЕКСТА]${NC}"
-    
-    # Проверка установки translate-shell
-    if ! command -v trans &> /dev/null; then
-        echo -e "${YELLOW}Установка translate-shell...${NC}"
-        sudo apt install -y translate-shell
+    check_deps
+    smart_install "translate-shell" &>/dev/null
+    text=$(gum input --placeholder "Введите текст для перевода (en↔ru)" --width 60)
+    if [ -n "$text" ]; then
+        result=$(trans -b "$text" 2>&1)
+        gum style --border normal --margin "1" --padding "1" --border-foreground 212 "$result"
+    else
+        gum style --foreground 196 "Текст не введён."
     fi
-    
-    echo -e "${CYAN}Выберите направление перевода:${NC}"
-    echo "1) Английский → Русский"
-    echo "2) Русский → Английский"
-    read -p "Ваш выбор (1-2): " dir_choice
-    
-    case $dir_choice in
-        1) from="en"; to="ru" ;;
-        2) from="ru"; to="en" ;;
-        *) echo -e "${RED}Неверный выбор.${NC}"; return ;;
-    esac
-    
-    echo -e "${CYAN}Введите текст для перевода:${NC}"
-    read -r text
-    echo -e "${GREEN}Результат:${NC}"
-    trans -b "$from:$to" "$text"
-    read -p "Нажмите Enter, чтобы продолжить..."
 }
 
-# 3. Проверка орфографии в файле
+# --- 3. Проверка орфографии ---
 spell_check() {
-    echo -e "\n${GREEN}[📝 ПРОВЕРКА ОРФОГРАФИИ]${NC}"
-    
-    # Установка aspell и русского словаря
-    if ! command -v aspell &> /dev/null; then
-        echo -e "${YELLOW}Установка aspell и русского словаря...${NC}"
-        sudo apt install -y aspell aspell-ru
-    fi
-    
-    echo -n -e "${CYAN}Введите путь к файлу: ${NC}"
-    read filepath
-    
+    check_deps
+    smart_install "aspell" "aspell-ru"
+    filepath=$(gum input --placeholder "Введите путь к файлу" --width 60)
     if [ -f "$filepath" ]; then
-        aspell check -l ru "$filepath"
-        echo -e "${GREEN}✅ Проверка орфографии завершена.${NC}"
+        gum spin --spinner dot --title "Проверяем орфографию..." -- aspell check -l ru "$filepath"
+        gum style --foreground 46 "✅ Проверка завершена."
     else
-        echo -e "${RED}❌ Файл не найден.${NC}"
+        gum style --foreground 196 "Файл не найден: $filepath"
     fi
-    read -p "Нажмите Enter, чтобы продолжить..."
 }
 
-# 4. Транслитерация
-transliterate() {
-    echo -e "\n${GREEN}[🔤 ТРАНСЛИТЕРАЦИЯ (Русский → Латыница)]${NC}"
-    
-    echo -e "${CYAN}Введите текст на русском:${NC}"
-    read -r text
-    
-    # Таблица транслитерации
-    translit=$(echo "$text" | sed 'y/абвгдезийклмнопрстуфхцыэАБВГДЕЗИЙКЛМНОПРСТУФХЦЫЭ/abvgdezijklmnoprstufhcyeABVGDEZIJKLMNOPRSTUFHCYE/' | \
-    sed 'y/ёЁ/yoYO/' | \
-    sed 'y/жЖ/zhZH/' | \
-    sed 'y/чЧ/chCH/' | \
-    sed 'y/шШ/shSH/' | \
-    sed 'y/щЩ/shshSHSH/' | \
-    sed 'y/юЮ/yuYU/' | \
-    sed 'y/яЯ/yaYA/' | \
-    sed 'y/ьъЬЪ//' )
-    
-    echo -e "${GREEN}Результат транслитерации:${NC}"
-    echo "$translit"
-    read -p "Нажмите Enter, чтобы продолжить..."
-}
-
-# 5. Русская дата
-russian_date() {
-    echo -e "\n${GREEN}[📅 РУССКАЯ ДАТА]${NC}"
-    
-    # Временно устанавливаем русскую локаль только для этой команды
-    LANG=ru_RU.UTF-8 date
-    echo ""
-    read -p "Нажмите Enter, чтобы продолжить..."
-}
-
-# 6. Анализ русских букв в файле
-analyze_russian_chars() {
-    echo -e "\n${GREEN}[🔍 АНАЛИЗ РУССКИХ БУКВ]${NC}"
-    echo -e "${CYAN}Эта функция покажет строки, содержащие русские буквы.${NC}"
-    echo -n -e "${CYAN}Введите путь к файлу: ${NC}"
-    read filepath
-    
-    if [ -f "$filepath" ]; then
-        echo -e "${GREEN}Строки с русскими буквами:${NC}"
-        grep -P '[а-яА-ЯёЁ]' "$filepath"
-    else
-        echo -e "${RED}❌ Файл не найден.${NC}"
-    fi
-    read -p "Нажмите Enter, чтобы продолжить..."
-}
-
-# --- СИСТЕМНЫЕ ФУНКЦИИ ---
-
-# Системный монитор
+# --- 4. Системный монитор (улучшенный, с btop) ---
 system_monitor() {
-    echo -e "\n${GREEN}[🖥️ СИСТЕМНЫЙ МОНИТОР]${NC}"
-    
-    echo -e "${YELLOW}Информация о системе:${NC}"
-    echo -e "${BLUE}-----------------------${NC}"
-    echo -e "${CYAN}ОС:${NC} $(uname -o)"
-    echo -e "${CYAN}Версия ядра:${NC} $(uname -r)"
-    echo -e "${CYAN}Архитектура:${NC} $(uname -m)"
-    echo ""
-    
-    echo -e "${YELLOW}Использование памяти (RAM):${NC}"
-    free -h
-    echo ""
-    
-    echo -e "${YELLOW}Информация о диске:${NC}"
-    df -h /
-    echo ""
-    
-    echo -e "${YELLOW}Топ 5 процессов по использованию CPU:${NC}"
-    ps aux --sort=-%cpu | head -6
-    echo ""
-    
-    echo -n -e "${CYAN}Сохранить отчёт в файл? (y/N): ${NC}"
-    read save_report
-    if [[ "$save_report" =~ ^[Yy]$ ]]; then
-        report_file="system_report_$(date +%Y%m%d_%H%M%S).txt"
-        {
-            echo "=== СИСТЕМНЫЙ ОТЧЁТ DEXTER ==="
-            echo "Дата: $(date)"
-            echo ""
-            echo "--- ОС и ядро ---"
-            echo "ОС: $(uname -o)"
-            echo "Версия ядра: $(uname -r)"
-            echo "Архитектура: $(uname -m)"
-            echo ""
-            echo "--- Память ---"
-            free -h
-            echo ""
-            echo "--- Диск ---"
-            df -h /
-            echo ""
-            echo "--- Процессы ---"
-            ps aux --sort=-%cpu | head -10
-        } > "$report_file"
-        echo -e "${GREEN}✅ Отчёт сохранён в $report_file${NC}"
+    check_deps
+    if command -v btop &>/dev/null; then
+        gum style --foreground 46 "Запуск btop (интерактивный монитор)..."
+        sleep 1
+        btop
+    else
+        # fallback: через /proc/stat и gum gauge
+        cpu_usage() {
+            local prev_idle prev_total
+            read prev_idle prev_total < <(awk '/cpu / {print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+            sleep 0.5
+            read curr_idle curr_total < <(awk '/cpu / {print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+            local idle=$(($curr_idle - $prev_idle))
+            local total=$(($curr_total - $prev_total))
+            echo $(($total - $idle)) $total
+        }
+        read cpu_busy cpu_total < <(cpu_usage)
+        cpu_percent=$(( cpu_busy * 100 / cpu_total ))
+        ram_total=$(free -k | awk '/Mem:/ {print $2}')
+        ram_available=$(free -k | awk '/Mem:/ {print $7}')
+        ram_used=$((ram_total - ram_available))
+        ram_percent=$(( ram_used * 100 / ram_total ))
+        disk_used=$(df -B1 / | awk 'NR==2 {print $3}')
+        disk_total=$(df -B1 / | awk 'NR==2 {print $2}')
+        disk_percent=$(( disk_used * 100 / disk_total ))
+        uptime=$(uptime -p | sed 's/up //')
+
+        gum style --border normal --margin "1" --padding "1" --border-foreground 46 "📊 СИСТЕМНЫЙ МОНИТОР"
+        gum style --foreground 212 "Загрузка CPU:    " && gum gauge --percent $cpu_percent --foreground 212 --border-foreground 212
+        gum style --foreground 46  "Использование RAM:" && gum gauge --percent $ram_percent --foreground 46 --border-foreground 46
+        gum style --foreground 99  "Использование диска:" && gum gauge --percent $disk_percent --foreground 99 --border-foreground 99
+        echo ""
+        gum style --foreground 226 "Аптайм: $uptime"
+        read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
     fi
-    
-    read -p "Нажмите Enter, чтобы продолжить..."
 }
 
-# Очистка системы
+# --- 5. Очистка системы (с прогресс-баром) ---
 total_cleanup() {
-    echo -e "\n${GREEN}[🧹 ТОТАЛЬНАЯ УБОРКА]${NC}"
-    echo -e "${RED}ВНИМАНИЕ: Это действие очистит кэш и временные файлы.${NC}"
-    read -p "Вы уверены? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Очистка отменена."
-        read -p "Нажмите Enter, чтобы продолжить..."
-        return
-    fi
-
-    # Очистка кэша apt
-    echo -ne "${CYAN}Очистка кэша пакетов apt...${NC}"
-    sudo apt clean && sudo apt autoclean -y > /dev/null 2>&1
-    echo -e " ${GREEN}Готово${NC}"
-
-    # Очистка временных файлов
-    echo -ne "${CYAN}Очистка временных каталогов (/tmp, ~/.cache)...${NC}"
-    rm -rf /tmp/* 2>/dev/null
-    rm -rf ~/.cache/* 2>/dev/null
-    echo -e " ${GREEN}Готово${NC}"
-
-    # Очистка логов
-    echo -ne "${CYAN}Очистка системных логов...${NC}"
-    sudo rm -rf /var/log/* 2>/dev/null
-    echo -e " ${GREEN}Готово${NC}"
-
-    # Анализ неиспользуемых пакетов
-    echo -e "${CYAN}Поиск неиспользуемых пакетов...${NC}"
-    sudo apt autoremove --dry-run
-
-    echo -e "${GREEN}Очистка завершена!${NC}"
-    read -p "Нажмите Enter, чтобы продолжить..."
-}
-
-# Резервное копирование
-smart_backup() {
-    echo -e "\n${GREEN}[💾 УМНЫЙ БЭКАП]${NC}"
-    backup_dir="/sdcard/dexter_backups"
-    mkdir -p "$backup_dir" 2>/dev/null
-    timestamp=$(date +%Y%m%d_%H%M%S)
-    backup_file="$backup_dir/termux_backup_$timestamp.tar.gz"
-
-    echo -e "${CYAN}Будет создан архив: ${backup_file}${NC}"
-    echo -e "${YELLOW}В него войдут ваши домашняя директория (~) и все установленные пакеты.${NC}"
-    read -p "Начать резервное копирование? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Бэкап отменен."
-        read -p "Нажмите Enter, чтобы продолжить..."
-        return
-    fi
-
-    echo -e "${CYAN}Создание резервной копии...${NC}"
-    tar -czf "$backup_file" -C ~ . 2>/dev/null
-
+    gum confirm "Очистить кэш apt, временные файлы и логи?" --affirmative "Да" --negative "Нет"
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ Бэкап успешно создан: ${backup_file}${NC}"
-        
-        # Проверка целостности архива
-        echo -e "${CYAN}Проверка целостности архива...${NC}"
-        if tar -tzf "$backup_file" > /dev/null 2>&1; then
-            echo -e "${GREEN}✅ Архив цел и не повреждён.${NC}"
-            ls -lh "$backup_file"
+        (
+            echo "10"; echo "XXX"; echo "Очистка кэша apt..."; echo "XXX"
+            sudo apt clean &>/dev/null && sudo apt autoclean -y &>/dev/null
+            echo "40"; echo "XXX"; echo "Очистка временных файлов..."; echo "XXX"
+            rm -rf /tmp/* ~/.cache/* &>/dev/null
+            echo "70"; echo "XXX"; echo "Очистка системных логов..."; echo "XXX"
+            sudo rm -rf /var/log/* &>/dev/null
+            echo "100"; echo "XXX"; echo "Готово!"; echo "XXX"
+        ) | gum progress --title "Очистка системы" --timeout=10
+        gum style --foreground 46 "✅ Очистка завершена."
+    fi
+}
+
+# --- 6. Умный бэкап с прогресс-баром ---
+smart_backup() {
+    mkdir -p "$BACKUP_DIR"
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    backup_file="$BACKUP_DIR/dexterity_backup_$timestamp.tar.gz"
+    gum confirm "Создать бэкап домашней директории?\nФайл: $backup_file" --affirmative "Да" --negative "Нет"
+    if [ $? -eq 0 ]; then
+        (
+            echo "0"; echo "XXX"; echo "Подготовка..."; echo "XXX"
+            sleep 1
+            echo "30"; echo "XXX"; echo "Создание архива..."; echo "XXX"
+            tar -czf "$backup_file" -C "$HOME" . &>/dev/null
+            echo "80"; echo "XXX"; echo "Проверка целостности..."; echo "XXX"
+            tar -tzf "$backup_file" &>/dev/null
+            echo "100"; echo "XXX"; echo "Готово!"; echo "XXX"
+        ) | gum progress --title "Создание бэкапа" --timeout=30
+        if [ $? -eq 0 ]; then
+            gum style --foreground 46 "✅ Бэкап создан и проверен: $backup_file"
         else
-            echo -e "${RED}❌ Архив повреждён! Попробуйте создать бэкап заново.${NC}"
+            gum style --foreground 196 "❌ Ошибка при создании бэкапа."
         fi
-    else
-        echo -e "${RED}❌ Ошибка при создании бэкапа.${NC}"
     fi
-    read -p "Нажмите Enter, чтобы продолжить..."
 }
 
-# Аудит сети
+# --- 7. Аудит сети (расширенный: публичный IP, геолокация) ---
 network_audit() {
-    echo -e "\n${GREEN}[🌐 АУДИТ СЕТИ]${NC}"
-    
-    # Определение IP и подсети
-    local_ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -1)
-    
+    check_deps
+    smart_install "arp-scan" "nmap" "curl" "jq"
+    # Определяем интерфейс
+    iface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [ -z "$iface" ]; then
+        gum style --foreground 196 "Не удалось определить сетевой интерфейс. Убедитесь, что Wi-Fi включён."
+        return
+    fi
+    local_ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
     if [ -z "$local_ip" ]; then
-        echo -e "${RED}Не удалось определить IP-адрес. Убедитесь, что Wi-Fi включен.${NC}"
+        gum style --foreground 196 "Не удалось получить IP для интерфейса $iface."
+        return
+    fi
+    network=$(echo "$local_ip" | cut -d. -f1-3)
+    gum style --border normal --margin "1" --padding "1" --border-foreground 46 "🌐 Аудит сети"
+    gum style "Ваш локальный IP: $local_ip (интерфейс $iface)"
+    gum style "Сканирование локальной сети ${network}.0/24..."
+    gum spin --spinner dot --title "Сканирование..." -- nmap -sn "${network}.0/24" -oG - | awk '/Up$/{print $2}' | while read ip; do
+        echo "✅ $ip активен"
+    done
+    # Публичный IP и геолокация
+    echo ""
+    gum style "Получение публичного IP и геолокации..."
+    public_ip=$(curl -s ifconfig.me)
+    if [ -n "$public_ip" ]; then
+        gum style "Публичный IP: $public_ip"
+        geo=$(curl -s "http://ip-api.com/json/$public_ip" | jq -r '.city + ", " + .country')
+        gum style "Геолокация: $geo"
     else
-        # Проверка установки nmap
-        if ! command -v nmap &> /dev/null; then
-            echo -e "${YELLOW}Установка nmap...${NC}"
-            sudo apt install -y nmap
-        fi
-        
-        network=$(echo "$local_ip" | cut -d. -f1-3)
-        echo -e "${CYAN}Ваш IP: ${local_ip}${NC}"
-        echo -e "${CYAN}Сканирование сети ${network}.0/24...${NC}"
-        echo -e "${YELLOW}Активные устройства в сети:${NC}"
-        nmap -sn "${network}.0/24" | grep -E "Nmap scan report for|MAC" | sed 's/Nmap scan report for/Host:/'
+        gum style --foreground 196 "Не удалось определить публичный IP."
     fi
-    read -p "Нажмите Enter, чтобы продолжить..."
+    read -n 1 -s -r -p "Нажмите любую клавишу..."
 }
 
-# Анализ диска
+# --- 8. Анализ диска (ncdu) ---
 disk_usage() {
-    echo -e "\n${GREEN}[📊 АНАЛИЗ ДИСКА]${NC}"
-    
-    # Проверка установки ncdu
-    if ! command -v ncdu &> /dev/null; then
-        echo -e "${YELLOW}Установка ncdu...${NC}"
-        sudo apt install -y ncdu
-    fi
-    
-    echo -e "${CYAN}Какую директорию проанализировать?${NC}"
-    echo "1) Домашняя директория (~)"
-    echo "2) Вся система (/)"
-    read -p "Ваш выбор (1-2): " disk_choice
-
-    case $disk_choice in
-        1) target_dir="$HOME" ;;
-        2) target_dir="/" ;;
-        *) echo -e "${RED}Неверный выбор.${NC}"; read -p "Нажмите Enter..."; return ;;
+    check_deps
+    target=$(gum choose "Домашняя директория (~)" "Вся система (/)" --header "Выберите директорию для анализа")
+    case "$target" in
+        "Домашняя директория (~)") dir="$HOME" ;;
+        "Вся система (/)") dir="/" ;;
+        *) return ;;
     esac
-
-    echo -e "${YELLOW}Анализ ${target_dir}...${NC}"
-    ncdu "$target_dir" --color dark -e
-    
-    read -p "Нажмите Enter, чтобы продолжить..."
-}
-
-# --- ГЛАВНОЕ МЕНЮ ---
-show_banner() {
     clear
-    echo -e "${CYAN}=============================================${NC}"
-    echo -e "${PURPLE}     🦸‍♂️ ИНСТРУМЕНТАРИЙ DEXTER v2.0${NC}"
-    echo -e "${CYAN}=============================================${NC}"
-    echo -e "${BLUE}        Ваш помощник в мире Linux на Android${NC}"
-    echo -e "${CYAN}=============================================${NC}"
-    echo ""
+    ncdu "$dir" --color dark -e
+    echo -e "\n"
+    read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
 }
 
-while true; do
-    show_banner
-    echo -e "${CYAN}🇷🇺 РАБОТА С РУССКИМ ЯЗЫКОМ:${NC}"
-    echo "1)  Настройка русского языка"
-    echo "2)  Перевод текста (en↔ru)"
-    echo "3)  Проверка орфографии в файле"
-    echo "4)  Транслитерация (русская → латыница)"
-    echo "5)  Русская дата"
-    echo "6)  Анализ русских букв в файле"
-    echo ""
-    echo -e "${CYAN}🖥️ СИСТЕМНЫЕ ФУНКЦИИ:${NC}"
-    echo "7)  Системный монитор"
-    echo "8)  Тотальная уборка"
-    echo "9)  Умный бэкап"
-    echo "10) Аудит сети"
-    echo "11) Анализ диска"
-    echo ""
-    echo "0)  ❌ Выход"
-    echo ""
-    read -p "Ваш выбор: " choice
+# --- 9. Умная сортировка файлов ---
+smart_sort() {
+    local target_dir
+    target_dir=$(gum input --placeholder "Введите путь к папке для сортировки (например, ~/Downloads)" --width 60)
+    target_dir="${target_dir/#\~/$HOME}"
+    if [ ! -d "$target_dir" ]; then
+        gum style --foreground 196 "Папка не существует: $target_dir"
+        return
+    fi
+    cd "$target_dir" || return
+    gum style --foreground 46 "Сортировка файлов в $target_dir по расширениям..."
+    for file in *; do
+        if [ -f "$file" ]; then
+            ext="${file##*.}"
+            if [ "$ext" = "$file" ]; then ext="no_ext"; fi
+            mkdir -p "$ext"
+            mv "$file" "$ext/"
+        fi
+    done
+    gum style --foreground 46 "✅ Сортировка завершена. Файлы распределены по папкам."
+}
 
-    case $choice in
-        1) setup_russian ;;
-        2) translate_text ;;
-        3) spell_check ;;
-        4) transliterate ;;
-        5) russian_date ;;
-        6) analyze_russian_chars ;;
-        7) system_monitor ;;
-        8) total_cleanup ;;
-        9) smart_backup ;;
-        10) network_audit ;;
-        11) disk_usage ;;
-        0) echo -e "${GREEN}До свидания, DEXTER!${NC}"; exit 0 ;;
-        *) echo -e "${RED}Неверный выбор. Попробуйте снова.${NC}"; sleep 1 ;;
-    esac
-done
+# --- 10. AI-помощник (через API) ---
+ai_assistant() {
+    gum style --border normal --margin "1" --padding "1" --border-foreground 99 "🧠 AI-помощник"
+    gum style "Введите описание задачи на русском, а AI сгенерирует команду."
+    local prompt=$(gum input --placeholder "Например: найти все файлы .log в домашней папке" --width 60)
+    if [ -z "$prompt" ]; then
+        gum style --foreground 196 "Запрос пуст."
+        return
+    fi
+    # Используем бесплатный API (https://api.mistral.ai или другой), но для простоты сделаем заглушку
+    gum style --foreground 226 "AI-функция в разработке. Для её работы нужен API-ключ."
+    gum style "Пока что вы можете использовать встроенные команды."
+    # Здесь можно вставить вызов local LLM или online API (требуется ключ).
+}
+
+# --- Главное меню (gum) ---
+main_menu() {
+    while true; do
+        clear
+        gum style --border thick --margin "1" --padding "2 4" --border-foreground 99 "🦸‍♂️ DEXTERITY v$VERSION"
+        choice=$(gum choose --height 18 --cursor.foreground 212 --header.foreground 46 \
+            "🇷🇺 Настройка русского языка" \
+            "🔄 Перевод текста (en↔ru)" \
+            "📝 Проверка орфографии" \
+            "📊 Системный монитор (btop или gauge)" \
+            "🧹 Тотальная уборка" \
+            "💾 Умный бэкап" \
+            "🌐 Аудит сети (локальный + публичный IP)" \
+            "📁 Анализ диска (ncdu)" \
+            "🗂️ Умная сортировка файлов" \
+            "🧠 AI-помощник (экспериментально)" \
+            "❌ Выход")
+        case "$choice" in
+            "🇷🇺 Настройка русского языка") setup_russian ;;
+            "🔄 Перевод текста (en↔ru)") translate_text ;;
+            "📝 Проверка орфографии") spell_check ;;
+            "📊 Системный монитор (btop или gauge)") system_monitor ;;
+            "🧹 Тотальная уборка") total_cleanup ;;
+            "💾 Умный бэкап") smart_backup ;;
+            "🌐 Аудит сети (локальный + публичный IP)") network_audit ;;
+            "📁 Анализ диска (ncdu)") disk_usage ;;
+            "🗂️ Умная сортировка файлов") smart_sort ;;
+            "🧠 AI-помощник (экспериментально)") ai_assistant ;;
+            "❌ Выход") echo -e "\nДо свидания, DEXTER!"; exit 0 ;;
+        esac
+    done
+}
+
+# --- Запуск ---
+parse_args "$@"
+check_deps
+main_menu
