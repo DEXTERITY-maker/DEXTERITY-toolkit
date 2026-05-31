@@ -1,242 +1,238 @@
 #!/usr/bin/env bash
 
 # ========================================================
-# 🦸‍♂️ ИНСТРУМЕНТАРИЙ DEXTERITY v3.0
-# Многофункциональный инструмент для работы с русским языком и системой в UserLAnd
+# 🦸‍♂️ DEXTERITY v4.0 - Современный инструмент для UserLAnd
 # ========================================================
 
-# --- Конфигурация ---
-VERSION="3.0"
+VERSION="4.0"
 CONFIG_DIR="$HOME/.config/dexterity"
 BACKUP_DIR="/sdcard/dexter_backups"
 LOG_FILE="$CONFIG_DIR/dexterity.log"
 
-# --- Цвета и стили ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-BOLD='\033[1m'
+# --- Цвета для gum (можно менять) ---
+export GUM_CHOOSE_HEADER_FOREGROUND="212"
+export GUM_CONFIRM_PROMPT_FOREGROUND="46"
+export GUM_SPIN_SPINNER="dot"
 
 # --- Инициализация ---
 mkdir -p "$CONFIG_DIR"
 touch "$LOG_FILE"
 
-# --- Вспомогательные функции ---
+# --- Логирование ---
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-show_loading() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-}
-
-check_and_install() {
-    local package=$1
-    local command=${2:-$package}
-    if ! command -v "$command" &> /dev/null; then
-        echo -e "${YELLOW}⚠️ $package не установлен. Установить? (y/N): ${NC}"
-        read -r answer
-        if [[ "$answer" =~ ^[Yy]$ ]]; then
-            echo -e "${CYAN}Установка $package...${NC}"
-            sudo apt update &> /dev/null
-            sudo apt install -y "$package" &> /dev/null &
-            show_loading $!
-            if command -v "$command" &> /dev/null; then
-                echo -e "${GREEN}✅ $package установлен.${NC}"
+# --- Функция установки пакетов с рекомендованными ---
+smart_install() {
+    local packages=("$@")
+    for pkg in "${packages[@]}"; do
+        if ! dpkg -l | grep -qw "$pkg"; then
+            echo "📦 Установка $pkg (с рекомендациями)..."
+            sudo apt update &>/dev/null
+            sudo apt install --install-recommends -y "$pkg" &>/dev/null
+            if [ $? -eq 0 ]; then
+                echo "✅ $pkg установлен"
             else
-                echo -e "${RED}❌ Не удалось установить $package.${NC}"
+                echo "❌ Ошибка при установке $pkg"
                 return 1
             fi
         else
-            return 1
+            echo "✅ $pkg уже установлен"
         fi
-    fi
-    return 0
+    done
 }
 
-# --- Основные функции ---
+# --- Проверка зависимостей ---
+check_deps() {
+    local missing=()
+    for cmd in gum ncdu nmap; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        gum style --foreground 196 "⚠️ Отсутствуют: ${missing[*]}"
+        gum confirm "Установить необходимые пакеты?" && smart_install "${missing[@]}"
+    fi
+}
 
+# --- 1. Настройка русского языка ---
 setup_russian() {
-    dialog --title "🇷🇺 Настройка русского языка" --infobox "Установка языковых пакетов и генерация локали..." 5 50
-    sleep 1
-    sudo apt update &> /dev/null
-    sudo apt install -y language-pack-ru &> /dev/null
-    sudo locale-gen ru_RU.UTF-8 &> /dev/null
+    gum style --border normal --margin "1" --padding "1" --border-foreground 46 "🇷🇺 Настройка русского языка"
+    if ! dpkg -l | grep -qw language-pack-ru; then
+        sudo apt update &>/dev/null
+        sudo apt install -y language-pack-ru &>/dev/null
+    fi
+    sudo locale-gen ru_RU.UTF-8 &>/dev/null
     export LANG=ru_RU.UTF-8
     export LC_ALL=ru_RU.UTF-8
     export LANGUAGE=ru_RU:ru
-    grep -qxF 'export LANG=ru_RU.UTF-8' ~/.bashrc || echo -e "\n# Русская локаль для DEXTERITY\nexport LANG=ru_RU.UTF-8\nexport LC_ALL=ru_RU.UTF-8\nexport LANGUAGE=ru_RU:ru" >> ~/.bashrc
-    dialog --title "Готово" --msgbox "Русская локаль успешно настроена!\n\nПерезапустите терминал для применения изменений." 8 50
+    grep -qxF 'export LANG=ru_RU.UTF-8' ~/.bashrc || {
+        echo -e "\n# Русская локаль для DEXTERITY\nexport LANG=ru_RU.UTF-8\nexport LC_ALL=ru_RU.UTF-8\nexport LANGUAGE=ru_RU:ru" >> ~/.bashrc
+    }
+    gum style --foreground 46 "✅ Русская локаль настроена. Перезапусти терминал."
 }
 
+# --- 2. Перевод текста (gum input) ---
 translate_text() {
-    check_and_install "translate-shell" "trans" || return
-    TEMP_FILE=$(mktemp)
-    dialog --title "Перевод текста" --inputbox "Введите текст для перевода (en ↔ ru):" 10 60 2>"$TEMP_FILE"
-    text=$(<"$TEMP_FILE")
-    rm -f "$TEMP_FILE"
+    check_deps
+    smart_install "translate-shell" &>/dev/null
+    text=$(gum input --placeholder "Введите текст для перевода (en↔ru)" --width 60)
     if [ -n "$text" ]; then
         result=$(trans -b "$text" 2>&1)
-        dialog --title "Результат перевода" --msgbox "$result" 20 70
+        gum style --border normal --margin "1" --padding "1" --border-foreground 212 "$result"
     else
-        dialog --title "Ошибка" --msgbox "Текст не был введен." 6 40
+        gum style --foreground 196 "Текст не введён."
     fi
 }
 
+# --- 3. Проверка орфографии ---
 spell_check() {
-    check_and_install "aspell" "aspell" || return
-    check_and_install "aspell-ru" "aspell" || return
-    TEMP_FILE=$(mktemp)
-    dialog --title "Проверка орфографии" --inputbox "Введите путь к файлу:" 8 50 2>"$TEMP_FILE"
-    filepath=$(<"$TEMP_FILE")
-    rm -f "$TEMP_FILE"
+    check_deps
+    smart_install "aspell" "aspell-ru"
+    filepath=$(gum input --placeholder "Введите путь к файлу" --width 60)
     if [ -f "$filepath" ]; then
-        dialog --title "Результат проверки" --infobox "Проверка орфографии в файле...\n$filepath" 5 60
-        sleep 1
-        aspell check -l ru "$filepath"
-        dialog --title "Готово" --msgbox "Проверка орфографии завершена." 6 40
+        gum spin --spinner dot --title "Проверяем орфографию..." -- aspell check -l ru "$filepath"
+        gum style --foreground 46 "✅ Проверка завершена."
     else
-        dialog --title "Ошибка" --msgbox "Файл не найден: $filepath" 6 60
+        gum style --foreground 196 "Файл не найден: $filepath"
     fi
 }
 
+# --- 4. Системный монитор (исправлен) ---
 system_monitor() {
-    CPU_USAGE=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
-    RAM_USAGE=$(free | grep Mem | awk '{printf("%.1f"), $3/$2 * 100.0}')
-    DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
-    UPTIME=$(uptime -p | sed 's/up //')
-    
-    dialog --title "🖥️ Системный монитор" --gauge "Загрузка CPU: $CPU_USAGE%" 10 50 $CPU_USAGE
-    dialog --title "🖥️ Системный монитор" --gauge "Загрузка RAM: $RAM_USAGE%" 10 50 $RAM_USAGE
-    dialog --title "🖥️ Системный монитор" --gauge "Загрузка диска: $DISK_USAGE%" 10 50 $DISK_USAGE
-    
-    INFO="System Uptime: $UPTIME\n\n$(df -h | head -2)\n\n$(free -h)\n\n$(ps aux --sort=-%cpu | head -6)"
-    dialog --title "Полная информация о системе" --msgbox "$INFO" 25 70
+    # CPU через /proc/stat
+    cpu_usage() {
+        local prev_idle prev_total
+        read prev_idle prev_total < <(awk '/cpu / {print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+        sleep 0.5
+        read curr_idle curr_total < <(awk '/cpu / {print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+        local idle=$(($curr_idle - $prev_idle))
+        local total=$(($curr_total - $prev_total))
+        echo $(($total - $idle)) $total
+    }
+    read cpu_busy cpu_total < <(cpu_usage)
+    cpu_percent=$(( cpu_busy * 100 / cpu_total ))
+    # RAM
+    ram_total=$(free -k | awk '/Mem:/ {print $2}')
+    ram_available=$(free -k | awk '/Mem:/ {print $7}')
+    ram_used=$((ram_total - ram_available))
+    ram_percent=$(( ram_used * 100 / ram_total ))
+    # Disk
+    disk_used=$(df -B1 / | awk 'NR==2 {print $3}')
+    disk_total=$(df -B1 / | awk 'NR==2 {print $2}')
+    disk_percent=$(( disk_used * 100 / disk_total ))
+    # Uptime
+    uptime=$(uptime -p | sed 's/up //')
+
+    gum style --border normal --margin "1" --padding "1" --border-foreground 46 "📊 СИСТЕМНЫЙ МОНИТОР"
+    gum style --foreground 212 "Загрузка CPU:    " && gum gauge --percent $cpu_percent --foreground 212 --border-foreground 212
+    gum style --foreground 46  "Использование RAM:" && gum gauge --percent $ram_percent --foreground 46 --border-foreground 46
+    gum style --foreground 99  "Использование диска:" && gum gauge --percent $disk_percent --foreground 99 --border-foreground 99
+    echo ""
+    gum style --foreground 226 "Аптайм: $uptime"
+    echo ""
+    read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
 }
 
+# --- 5. Очистка системы ---
 total_cleanup() {
-    dialog --title "Тотальная уборка" --yesno "Очистить кэш, временные файлы и логи?" 7 50
+    gum confirm "Очистить кэш apt, временные файлы и логи?" --affirmative "Да" --negative "Нет"
     if [ $? -eq 0 ]; then
-        (
-            echo "10"; echo "XXX"; echo "Очистка кэша apt..."; echo "XXX"
-            sudo apt clean &> /dev/null && sudo apt autoclean -y &> /dev/null
-            echo "40"; echo "XXX"; echo "Очистка временных файлов..."; echo "XXX"
-            rm -rf /tmp/* &> /dev/null && rm -rf ~/.cache/* &> /dev/null
-            echo "70"; echo "XXX"; echo "Очистка системных логов..."; echo "XXX"
-            sudo rm -rf /var/log/* &> /dev/null
-            echo "100"; echo "XXX"; echo "Готово!"; echo "XXX"
-        ) | dialog --title "Очистка системы" --gauge "Выполняется..." 8 70 0
-        dialog --title "Готово" --msgbox "Очистка завершена!" 6 40
+        gum spin --spinner line --title "Очистка кэша apt..." -- sudo apt clean &>/dev/null && sudo apt autoclean -y &>/dev/null
+        gum spin --spinner line --title "Очистка временных файлов..." -- sh -c 'rm -rf /tmp/* ~/.cache/*' &>/dev/null
+        gum spin --spinner line --title "Очистка системных логов..." -- sudo rm -rf /var/log/* &>/dev/null
+        gum style --foreground 46 "✅ Очистка завершена."
     fi
 }
 
+# --- 6. Умный бэкап ---
 smart_backup() {
     mkdir -p "$BACKUP_DIR"
     timestamp=$(date +%Y%m%d_%H%M%S)
     backup_file="$BACKUP_DIR/dexterity_backup_$timestamp.tar.gz"
-    dialog --title "Резервное копирование" --yesno "Создать бэкап домашней директории?\n\nФайл будет сохранен в:\n$backup_file" 10 60
+    gum confirm "Создать бэкап домашней директории?\nФайл: $backup_file" --affirmative "Да" --negative "Нет"
     if [ $? -eq 0 ]; then
-        (
-            echo "10"; echo "XXX"; echo "Создание архива..."; echo "XXX"
-            tar -czf "$backup_file" -C "$HOME" . &> /dev/null
-            echo "90"; echo "XXX"; echo "Проверка целостности..."; echo "XXX"
-            if tar -tzf "$backup_file" &> /dev/null; then
-                echo "100"; echo "XXX"; echo "Бэкап успешно создан!"; echo "XXX"
-            else
-                dialog --title "Ошибка" --msgbox "Ошибка при создании бэкапа!" 6 40
-                return
-            fi
-        ) | dialog --title "Создание бэкапа" --gauge "Выполняется..." 8 70 0
-        dialog --title "Готово" --msgbox "Бэкап успешно создан и проверен!\n\n$backup_file" 8 60
+        gum spin --spinner globe --title "Создание архива..." -- tar -czf "$backup_file" -C "$HOME" . &>/dev/null
+        gum spin --spinner globe --title "Проверка целостности..." -- tar -tzf "$backup_file" &>/dev/null
+        if [ $? -eq 0 ]; then
+            gum style --foreground 46 "✅ Бэкап создан и проверен: $backup_file"
+        else
+            gum style --foreground 196 "❌ Ошибка при создании бэкапа."
+        fi
     fi
 }
 
+# --- 7. Аудит сети (исправлен) ---
 network_audit() {
-    if ! command -v nmap &> /dev/null; then
-        dialog --title "Ошибка" --msgbox "nmap не установлен. Установите его: sudo apt install nmap" 6 50
+    check_deps
+    smart_install "arp-scan" "nmap"
+    # Определяем интерфейс
+    iface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [ -z "$iface" ]; then
+        gum style --foreground 196 "Не удалось определить сетевой интерфейс. Убедитесь, что Wi-Fi включён."
         return
     fi
-    local_ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -1)
+    local_ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
     if [ -z "$local_ip" ]; then
-        dialog --title "Ошибка" --msgbox "Не удалось определить IP-адрес. Убедитесь, что Wi-Fi включен." 6 60
+        gum style --foreground 196 "Не удалось получить IP для интерфейса $iface."
         return
     fi
     network=$(echo "$local_ip" | cut -d. -f1-3)
-    dialog --title "Аудит сети" --infobox "Ваш IP: $local_ip\nСканирование сети ${network}.0/24..." 5 60
-    sleep 2
-    scan_result=$(nmap -sn "${network}.0/24" | grep -E "Nmap scan report for|MAC" | sed 's/Nmap scan report for/Host:/')
-    dialog --title "Результаты аудита сети" --msgbox "$scan_result" 20 70
+    gum style --border normal --margin "1" --padding "1" --border-foreground 46 "🌐 Аудит сети"
+    gum style "Ваш IP: $local_ip (интерфейс $iface)"
+    gum style "Сканирование сети ${network}.0/24..."
+    gum spin --spinner dot --title "Сканирование..." -- nmap -sn "${network}.0/24" -oG - | awk '/Up$/{print $2}' | while read ip; do
+        echo "✅ $ip активен"
+    done
+    read -n 1 -s -r -p "Нажмите любую клавишу..."
 }
 
+# --- 8. Анализ диска ---
 disk_usage() {
-    if ! command -v ncdu &> /dev/null; then
-        dialog --title "Ошибка" --msgbox "ncdu не установлен. Установите его: sudo apt install ncdu" 6 50
-        return
-    fi
-    TEMP_FILE=$(mktemp)
-    dialog --title "Анализ диска" --menu "Выберите директорию для анализа:" 12 50 2 \
-        1 "Домашняя директория (~)" \
-        2 "Вся система (/)" \
-        2>"$TEMP_FILE"
-    choice=$(<"$TEMP_FILE")
-    rm -f "$TEMP_FILE"
-    case $choice in
-        1) target="$HOME" ;;
-        2) target="/" ;;
+    check_deps
+    target=$(gum choose "Домашняя директория (~)" "Вся система (/)" --header "Выберите директорию для анализа")
+    case "$target" in
+        "Домашняя директория (~)") dir="$HOME" ;;
+        "Вся система (/)") dir="/" ;;
         *) return ;;
     esac
     clear
-    ncdu "$target" --color dark -e
-    echo -e "${GREEN}Анализ завершён. Нажмите Enter, чтобы вернуться в меню...${NC}"
-    read
+    ncdu "$dir" --color dark -e
+    echo -e "\n"
+    read -n 1 -s -r -p "Нажмите любую клавишу для продолжения..."
 }
 
-# --- Основное меню ---
-while true; do
-    choice=$(dialog --clear --title "🦸‍♂️ ИНСТРУМЕНТАРИЙ DEXTERITY v$VERSION" \
-        --menu "Выберите действие с помощью стрелок и нажмите Enter:" 22 60 15 \
-        1 "🇷🇺 Настройка русского языка" \
-        2 "🔄 Перевод текста (en ↔ ru)" \
-        3 "📝 Проверка орфографии в файле" \
-        4 "🖥️ Системный монитор" \
-        5 "🧹 Тотальная уборка" \
-        6 "💾 Умный бэкап" \
-        7 "🌐 Аудит сети" \
-        8 "📊 Анализ диска (NCDU)" \
-        0 "❌ Выход" \
-        3>&1 1>&2 2>&3 3>&-)
-    case $? in
-        0)
-            case $choice in
-                1) setup_russian ;;
-                2) translate_text ;;
-                3) spell_check ;;
-                4) system_monitor ;;
-                5) total_cleanup ;;
-                6) smart_backup ;;
-                7) network_audit ;;
-                8) disk_usage ;;
-                0) break ;;
-            esac
-            ;;
-        1) break ;;
-        255) break ;;
-    esac
-done
-clear
-echo -e "${GREEN}До свидания, DEXTER!${NC}"
-exit 0
+# --- Главное меню (gum) ---
+main_menu() {
+    while true; do
+        clear
+        gum style --border thick --margin "1" --padding "2 4" --border-foreground 99 "🦸‍♂️ DEXTERITY v$VERSION"
+        choice=$(gum choose --height 15 --cursor.foreground 212 --header.foreground 46 \
+            "🇷🇺 Настройка русского языка" \
+            "🔄 Перевод текста (en↔ru)" \
+            "📝 Проверка орфографии" \
+            "📊 Системный монитор" \
+            "🧹 Тотальная уборка" \
+            "💾 Умный бэкап" \
+            "🌐 Аудит сети" \
+            "📁 Анализ диска" \
+            "❌ Выход")
+        case "$choice" in
+            "🇷🇺 Настройка русского языка") setup_russian ;;
+            "🔄 Перевод текста (en↔ru)") translate_text ;;
+            "📝 Проверка орфографии") spell_check ;;
+            "📊 Системный монитор") system_monitor ;;
+            "🧹 Тотальная уборка") total_cleanup ;;
+            "💾 Умный бэкап") smart_backup ;;
+            "🌐 Аудит сети") network_audit ;;
+            "📁 Анализ диска") disk_usage ;;
+            "❌ Выход") echo -e "\nДо свидания, DEXTER!"; exit 0 ;;
+        esac
+    done
+}
+
+# --- Запуск ---
+check_deps
+main_menu
