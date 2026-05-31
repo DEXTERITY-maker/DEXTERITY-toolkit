@@ -1,0 +1,10 @@
+*.log
+*.tmp
+*.bak
+system_report_*.txt
+*.tar.gz
+*.zip
+.DS_Store
+Thumbs.db
+*~
+*.swp
